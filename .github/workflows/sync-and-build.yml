@@ -104,9 +104,9 @@ jobs:
       matrix:
         include:
           - platform: macos-aarch64
-            runs-on: macos-15
+            runs-on: macos-26
           - platform: macos-x64
-            runs-on: macos-15-intel
+            runs-on: macos-26-xlarge
 
     steps:
       - name: 'Checkout RTL branch'
@@ -127,9 +127,13 @@ jobs:
       - name: 'Install toolchain and dependencies'
         run: |
           brew install autoconf make
-          sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+          # Select latest Xcode 26
+          XCODE_APP=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$XCODE_APP" ] && XCODE_APP="/Applications/Xcode.app"
+          echo "Using Xcode: $XCODE_APP"
+          sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
           # This will make GNU make available as 'make' and not only as 'gmake'
-          echo '/usr/local/opt/make/libexec/gnubin' >> $GITHUB_PATH
+          echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
       - name: 'Configure'
         run: >
