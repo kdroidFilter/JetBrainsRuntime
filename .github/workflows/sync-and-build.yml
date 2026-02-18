@@ -8,112 +8,112 @@ on:
 permissions:
   contents: write
 
+env:
+  UPSTREAM_REPO: 'https://github.com/JetBrains/JetBrainsRuntime.git'
+  RTL_FIX_COMMIT: 'b406c1a471'
+
 jobs:
 
-  ###
-  ### Check for new upstream JBR 25.x release
-  ###
-
   check-release:
-    name: 'Check for new JBR 25.x release'
-    runs-on: ubuntu-latest
+    name: 'Check for new JBR release'
+    runs-on: ubuntu-24.04
     outputs:
-      skip: ${{ steps.check.outputs.skip }}
-      upstream-tag: ${{ steps.check.outputs.upstream-tag }}
+      should-build: ${{ steps.check.outputs.should-build }}
+      release-tag: ${{ steps.check.outputs.release-tag }}
       rtl-tag: ${{ steps.check.outputs.rtl-tag }}
+
     steps:
-      - name: 'Check latest upstream release'
+      - name: 'Find latest JBR 25.x release'
         id: check
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Get the latest jbr-release-25.* release from upstream
-          UPSTREAM_TAG=$(gh api repos/JetBrains/JetBrainsRuntime/releases \
-            --per-page=100 \
-            --jq '[.[] | select(.tag_name | startswith("jbr-release-25."))][0].tag_name')
+          # List jbr-release-25.* tags from upstream and pick the latest
+          latest_tag=$(git ls-remote --tags "$UPSTREAM_REPO" 'refs/tags/jbr-release-25.*' \
+            | awk '{print $2}' \
+            | sed 's|refs/tags/||' \
+            | grep -v '\^{}' \
+            | sort -V \
+            | tail -1)
 
-          if [ "$UPSTREAM_TAG" = "null" ] || [ -z "$UPSTREAM_TAG" ]; then
-            echo "No JBR 25.x release found"
-            echo "skip=true" >> $GITHUB_OUTPUT
+          if [[ -z "$latest_tag" ]]; then
+            echo "No jbr-release-25.x tags found upstream"
+            echo "should-build=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # Derive RTL tag: jbr-release-25.0.2b329.66 → v25.0.2b329.66-rtl
-          VERSION="${UPSTREAM_TAG#jbr-release-}"
-          RTL_TAG="v${VERSION}-rtl"
+          echo "Latest upstream tag: $latest_tag"
 
-          # Check if we already published this release
-          if gh api "repos/${{ github.repository }}/git/refs/tags/$RTL_TAG" >/dev/null 2>&1; then
-            echo "Tag $RTL_TAG already exists, skipping"
-            echo "skip=true" >> $GITHUB_OUTPUT
+          # Derive the RTL tag name (e.g. jbr-release-25.0.2b329.66 → v25.0.2b329.66-rtl)
+          rtl_tag="$(echo "$latest_tag" | sed 's/^jbr-release-/v/')-rtl"
+          echo "RTL tag: $rtl_tag"
+
+          # Check if this tag already exists in our fork
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$rtl_tag" >/dev/null 2>&1; then
+            echo "Tag $rtl_tag already exists, skipping"
+            echo "should-build=false" >> $GITHUB_OUTPUT
           else
-            echo "New release found: $UPSTREAM_TAG → $RTL_TAG"
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "upstream-tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
-            echo "rtl-tag=$RTL_TAG" >> $GITHUB_OUTPUT
+            echo "New release detected, will build"
+            echo "should-build=true" >> $GITHUB_OUTPUT
+            echo "release-tag=$latest_tag" >> $GITHUB_OUTPUT
+            echo "rtl-tag=$rtl_tag" >> $GITHUB_OUTPUT
           fi
 
-  ###
-  ### Create a branch with the RTL fix cherry-picked on top of the upstream release
-  ###
-
   prepare-branch:
-    name: 'Prepare RTL fix branch'
+    name: 'Prepare RTL branch'
     needs: check-release
-    if: needs.check-release.outputs.skip != 'true'
-    runs-on: ubuntu-latest
+    if: needs.check-release.outputs.should-build == 'true'
+    runs-on: ubuntu-24.04
+
     steps:
       - name: 'Checkout fork'
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: 'Create RTL fix branch'
+      - name: 'Create RTL branch from upstream release'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPSTREAM_TAG: ${{ needs.check-release.outputs.upstream-tag }}
-          RTL_TAG: ${{ needs.check-release.outputs.rtl-tag }}
+          RELEASE_TAG: ${{ needs.check-release.outputs.release-tag }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Add upstream remote and fetch the release tag
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream tag "$RELEASE_TAG"
 
-          # Fetch the upstream release tag
-          git remote add upstream https://github.com/JetBrains/JetBrainsRuntime.git
-          git fetch --depth=1 upstream "refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
+          # Create a new branch from the upstream release tag
+          git checkout -b "rtl/$RELEASE_TAG" "$RELEASE_TAG"
 
-          # Create branch from upstream release
-          git checkout -b "rtl/$RTL_TAG" "refs/tags/$UPSTREAM_TAG"
+          # Fetch the RTL fix commit and its parent (needed for cherry-pick diff)
+          git fetch origin "$RTL_FIX_COMMIT"
+          parent=$(git cat-file -p "$RTL_FIX_COMMIT" | grep '^parent ' | head -1 | awk '{print $2}')
+          if [[ -n "$parent" ]]; then
+            git fetch origin "$parent"
+          fi
 
-          # Download the RTL fix as a patch and apply it
-          gh api "repos/${{ github.repository }}/commits/b406c1a471" \
-            -H "Accept: application/vnd.github.patch" > /tmp/rtl-fix.patch
-          git am /tmp/rtl-fix.patch
+          # Cherry-pick the RTL fix
+          git cherry-pick "$RTL_FIX_COMMIT"
 
-          # Push the branch
-          git push origin "rtl/$RTL_TAG"
-
-  ###
-  ### Build JDK for macOS (aarch64 + x64)
-  ###
+          # Push the branch (force in case of a previous failed run)
+          git push -f origin "rtl/$RELEASE_TAG"
 
   build-macos:
-    name: 'Build macOS (${{ matrix.platform }})'
+    name: 'Build ${{ matrix.platform }}'
     needs: [check-release, prepare-branch]
-    if: needs.check-release.outputs.skip != 'true'
+    if: needs.check-release.outputs.should-build == 'true'
     runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 180
+
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos-aarch64
-            runs-on: macos-26
+            runs-on: macos-15
           - platform: macos-x64
-            runs-on: macos-26-intel
+            runs-on: macos-15-intel
+
     steps:
       - name: 'Checkout RTL branch'
         uses: actions/checkout@v4
         with:
-          ref: 'rtl/${{ needs.check-release.outputs.rtl-tag }}'
+          ref: 'rtl/${{ needs.check-release.outputs.release-tag }}'
 
       - name: 'Get the BootJDK'
         id: bootjdk
@@ -127,17 +127,10 @@ jobs:
 
       - name: 'Install toolchain and dependencies'
         run: |
-          # Install build dependencies
           brew install autoconf make
-
-          # Select latest Xcode 26
-          XCODE_APP=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          [ -z "$XCODE_APP" ] && XCODE_APP="/Applications/Xcode.app"
-          echo "Using Xcode: $XCODE_APP"
-          sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
-
-          # Make GNU make available as 'make'
-          echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
+          sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+          # This will make GNU make available as 'make' and not only as 'gmake'
+          echo '/usr/local/opt/make/libexec/gnubin' >> $GITHUB_PATH
 
       - name: 'Configure'
         run: >
@@ -158,56 +151,57 @@ jobs:
         with:
           make-target: 'product-bundles'
           platform: ${{ matrix.platform }}
-          debug-suffix: ''
 
       - name: 'Upload bundles'
         uses: ./.github/actions/upload-bundles
         with:
           platform: ${{ matrix.platform }}
-          debug-suffix: ''
-
-  ###
-  ### Create a GitHub release with the build artifacts
-  ###
 
   create-release:
     name: 'Create GitHub Release'
     needs: [check-release, build-macos]
-    if: needs.check-release.outputs.skip != 'true'
-    runs-on: ubuntu-latest
+    if: needs.check-release.outputs.should-build == 'true'
+    runs-on: ubuntu-24.04
+
     steps:
-      - name: 'Download build artifacts'
+      - name: 'Download macOS aarch64 bundles'
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: bundles-*
-          merge-multiple: true
+          name: bundles-macos-aarch64
+          path: artifacts/macos-aarch64
 
-      - name: 'List artifacts'
-        run: ls -lh artifacts/
+      - name: 'Download macOS x64 bundles'
+        uses: actions/download-artifact@v4
+        with:
+          name: bundles-macos-x64
+          path: artifacts/macos-x64
 
       - name: 'Create release'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RTL_TAG: ${{ needs.check-release.outputs.rtl-tag }}
-          UPSTREAM_TAG: ${{ needs.check-release.outputs.upstream-tag }}
+          RELEASE_TAG: ${{ needs.check-release.outputs.release-tag }}
         run: |
+          echo "=== macOS aarch64 bundles ==="
+          ls -lh artifacts/macos-aarch64/
+          echo "=== macOS x64 bundles ==="
+          ls -lh artifacts/macos-x64/
+
+          # Build release notes
+          {
+            echo "JBR build with RTL fix for macOS CustomTitleBar."
+            echo ""
+            echo "Based on upstream release \`$RELEASE_TAG\` with RTL fix cherry-picked (commit \`$RTL_FIX_COMMIT\`)."
+            echo ""
+            echo "### Assets"
+            echo "- **macOS aarch64** (Apple Silicon)"
+            echo "- **macOS x64** (Intel)"
+          } > release-notes.md
+
           gh release create "$RTL_TAG" \
             --repo "${{ github.repository }}" \
-            --title "JBR $UPSTREAM_TAG with RTL Fix" \
-            --notes "$(cat <<'EOF'
-          Automated build of JetBrains Runtime with RTL fix for CustomTitleBar on macOS.
-
-          **Based on upstream release:** [`${{ needs.check-release.outputs.upstream-tag }}`](https://github.com/JetBrains/JetBrainsRuntime/releases/tag/${{ needs.check-release.outputs.upstream-tag }})
-
-          ### Changes
-          - Cherry-picked RTL fix commit (`b406c1a471`) for CustomTitleBar macOS support
-            - `AWTWindow.h` / `AWTWindow.m` — native RTL layout fix
-            - `Window.java` — Java-side RTL support
-
-          ### Assets
-          - `jdk-macos-aarch64.tar.gz` — macOS ARM64 (Apple Silicon)
-          - `jdk-macos-x64.tar.gz` — macOS x64 (Intel)
-          EOF
-          )" \
-            artifacts/*
+            --target "rtl/$RELEASE_TAG" \
+            --title "$RTL_TAG" \
+            --notes-file release-notes.md \
+            artifacts/macos-aarch64/*.tar.gz \
+            artifacts/macos-x64/*.tar.gz
