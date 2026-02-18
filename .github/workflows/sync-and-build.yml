@@ -71,24 +71,23 @@ jobs:
 
       - name: 'Create RTL branch from upstream release'
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.check-release.outputs.release-tag }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # Add upstream remote and fetch the release tag
           git remote add upstream "$UPSTREAM_REPO"
-          git fetch upstream tag "$RELEASE_TAG"
+          git fetch --depth=1 --no-tags upstream "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
 
           # Create a new branch from the upstream release tag
           git checkout -b "rtl/$RELEASE_TAG" "$RELEASE_TAG"
 
-          # Fetch the RTL fix commit and its parent (needed for cherry-pick diff)
-          git fetch origin "$RTL_FIX_COMMIT"
-          parent=$(git cat-file -p "$RTL_FIX_COMMIT" | grep '^parent ' | head -1 | awk '{print $2}')
-          if [[ -n "$parent" ]]; then
-            git fetch origin "$parent"
-          fi
-
-          # Cherry-pick the RTL fix
-          git cherry-pick "$RTL_FIX_COMMIT"
+          # Download the RTL fix as a patch via GitHub API and apply it
+          gh api "repos/${{ github.repository }}/commits/$RTL_FIX_COMMIT" \
+            -H "Accept: application/vnd.github.patch" > /tmp/rtl-fix.patch
+          git am /tmp/rtl-fix.patch
 
           # Push the branch (force in case of a previous failed run)
           git push -f origin "rtl/$RELEASE_TAG"
