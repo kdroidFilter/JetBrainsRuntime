@@ -106,7 +106,7 @@ jobs:
           - platform: macos-aarch64
             runs-on: macos-26
           - platform: macos-x64
-            runs-on: macos-15-intel
+            runs-on: macos-26
 
     steps:
       - name: 'Checkout RTL branch'
@@ -125,90 +125,30 @@ jobs:
         uses: ./.github/actions/get-gtest
 
       - name: 'Install toolchain and dependencies'
-        id: toolchain
         run: |
           brew install autoconf make
-
-          # Diagnostics
-          echo "Runner arch: $(uname -m)"
-
           # Select latest Xcode
-          XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          XCODE_APP=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
           [ -z "$XCODE_APP" ] && XCODE_APP="/Applications/Xcode.app"
           echo "Using Xcode: $XCODE_APP"
           sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
-
-          XCODE_DEV="$(xcode-select -p)"
-          TOOLCHAIN_BIN="$XCODE_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin"
-
-          # Diagnostics: find all metal-related tools
-          echo "=== Searching for metal tools ==="
-          find "$XCODE_APP" -name "metal" -o -name "metallib" -o -name "metal-*" 2>/dev/null | sort
-          echo "=== xcrun checks ==="
-          xcrun -find metal 2>&1 || true
-          xcrun -find metallib 2>&1 || true
-          xcrun --sdk macosx -find metallib 2>&1 || true
-          echo "=== /usr/bin metal tools ==="
-          ls -la /usr/bin/metal* 2>/dev/null || echo "No metal tools in /usr/bin"
-          echo "=== Metal toolchains ==="
-          ls -d "$XCODE_DEV"/Toolchains/*etal* 2>/dev/null || echo "No Metal toolchains found"
-          echo "=== Developer usr/bin ==="
-          ls "$XCODE_DEV/usr/bin/metal"* 2>/dev/null || echo "No metal tools in Developer/usr/bin"
-          echo "=========================="
-
-          # Collect all directories containing metal tools
-          EXTRA_PATHS="$TOOLCHAIN_BIN"
-
-          # Check Developer/usr/bin (often has tools not in toolchain)
-          if [ -f "$XCODE_DEV/usr/bin/metallib" ]; then
-            EXTRA_PATHS="$EXTRA_PATHS:$XCODE_DEV/usr/bin"
-            echo "Found metallib in Developer/usr/bin"
-          fi
-
-          # Find metallib anywhere in Xcode
-          METALLIB_PATH=$(find "$XCODE_APP" -name metallib -type f 2>/dev/null | head -1)
-          if [ -n "$METALLIB_PATH" ]; then
-            METALLIB_DIR=$(dirname "$METALLIB_PATH")
-            echo "Found metallib at: $METALLIB_PATH"
-            # Add to path if not already included
-            case ":$EXTRA_PATHS:" in
-              *":$METALLIB_DIR:"*) ;;
-              *) EXTRA_PATHS="$EXTRA_PATHS:$METALLIB_DIR" ;;
-            esac
-          else
-            echo "WARNING: metallib not found anywhere in Xcode app bundle"
-            # Try to find it system-wide
-            METALLIB_SYS=$(which metallib 2>/dev/null || find /usr -name metallib -type f 2>/dev/null | head -1)
-            if [ -n "$METALLIB_SYS" ]; then
-              echo "Found metallib system-wide at: $METALLIB_SYS"
-              EXTRA_PATHS="$EXTRA_PATHS:$(dirname "$METALLIB_SYS")"
-            fi
-          fi
-
-          echo "extra-path=$EXTRA_PATHS" >> $GITHUB_OUTPUT
-
-          # Verify tools
-          ls "$TOOLCHAIN_BIN/metal" 2>/dev/null && echo "metal found in toolchain" || echo "metal NOT in toolchain"
-          echo "Final extra-path: $EXTRA_PATHS"
-
-          # Make GNU make available as 'make'
+          sudo xcode-select -r
+          # Verify metal tools are available
+          echo "metal path: $(xcrun --find metal 2>/dev/null || echo 'NOT FOUND')"
+          echo "metallib path: $(xcrun --find metallib 2>/dev/null || echo 'NOT FOUND')"
+          # This will make GNU make available as 'make' and not only as 'gmake'
           echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
       - name: 'Configure'
-        run: |
-          # Add Xcode toolchain + metal tools to PATH
-          export PATH="${{ steps.toolchain.outputs.extra-path }}:$PATH"
-          echo "Verifying metal: $(which metal 2>/dev/null || echo 'NOT FOUND')"
-          echo "Verifying metallib: $(which metallib 2>/dev/null || echo 'NOT FOUND')"
-
-          bash configure \
-            --with-conf-name=${{ matrix.platform }} \
-            --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA} \
-            --with-boot-jdk=${{ steps.bootjdk.outputs.path }} \
-            --with-gtest=${{ steps.gtest.outputs.path }} \
-            --with-zlib=system \
-            --with-jmod-compress=zip-1 \
-            || (echo "Dumping config.log:" && cat config.log && exit 1)
+        run: >
+          bash configure
+          --with-conf-name=${{ matrix.platform }}
+          --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
+          --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
+          --with-gtest=${{ steps.gtest.outputs.path }}
+          --with-zlib=system
+          --with-jmod-compress=zip-1
+          || (echo "Dumping config.log:" && cat config.log && exit 1)
 
       - name: 'Build'
         id: build
