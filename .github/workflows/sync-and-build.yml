@@ -130,7 +130,6 @@ jobs:
           brew install autoconf make
 
           # Diagnostics
-          echo "arch=$(uname -m)" >> $GITHUB_OUTPUT
           echo "Runner arch: $(uname -m)"
 
           # Select latest Xcode
@@ -139,11 +138,28 @@ jobs:
           echo "Using Xcode: $XCODE_APP"
           sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
 
-          # Save Xcode toolchain path for configure step
-          TOOLCHAIN_BIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin"
-          echo "toolchain-bin=$TOOLCHAIN_BIN" >> $GITHUB_OUTPUT
+          XCODE_DEV="$(xcode-select -p)"
+          TOOLCHAIN_BIN="$XCODE_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 
-          # Verify metal is in toolchain
+          # Find metallib — it may live in a separate metal toolchain directory
+          METAL_EXTRA_PATHS=""
+          METALLIB_PATH=$(find "$XCODE_DEV" -name metallib -type f 2>/dev/null | head -1)
+          if [ -n "$METALLIB_PATH" ]; then
+            METALLIB_DIR=$(dirname "$METALLIB_PATH")
+            echo "Found metallib at: $METALLIB_PATH"
+            if [ "$METALLIB_DIR" != "$TOOLCHAIN_BIN" ]; then
+              METAL_EXTRA_PATHS="$METALLIB_DIR"
+            fi
+          else
+            echo "WARNING: metallib not found in Xcode"
+          fi
+
+          # Build the extra PATH string for configure
+          EXTRA_PATH="$TOOLCHAIN_BIN"
+          [ -n "$METAL_EXTRA_PATHS" ] && EXTRA_PATH="$EXTRA_PATH:$METAL_EXTRA_PATHS"
+          echo "extra-path=$EXTRA_PATH" >> $GITHUB_OUTPUT
+
+          # Verify tools
           ls "$TOOLCHAIN_BIN/metal" 2>/dev/null && echo "metal found in toolchain" || echo "metal NOT in toolchain"
 
           # Make GNU make available as 'make'
@@ -151,9 +167,10 @@ jobs:
 
       - name: 'Configure'
         run: |
-          # Add Xcode toolchain to PATH so configure finds metal
-          export PATH="${{ steps.toolchain.outputs.toolchain-bin }}:$PATH"
+          # Add Xcode toolchain + metal tools to PATH
+          export PATH="${{ steps.toolchain.outputs.extra-path }}:$PATH"
           echo "Verifying metal: $(which metal 2>/dev/null || echo 'NOT FOUND')"
+          echo "Verifying metallib: $(which metallib 2>/dev/null || echo 'NOT FOUND')"
 
           bash configure \
             --with-conf-name=${{ matrix.platform }} \
