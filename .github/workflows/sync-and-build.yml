@@ -106,7 +106,7 @@ jobs:
           - platform: macos-aarch64
             runs-on: macos-26
           - platform: macos-x64
-            runs-on: macos-26
+            runs-on: macos-15-intel
 
     steps:
       - name: 'Checkout RTL branch'
@@ -125,8 +125,13 @@ jobs:
         uses: ./.github/actions/get-gtest
 
       - name: 'Install toolchain and dependencies'
+        id: toolchain
         run: |
           brew install autoconf make
+
+          # Diagnostics
+          echo "arch=$(uname -m)" >> $GITHUB_OUTPUT
+          echo "Runner arch: $(uname -m)"
 
           # Select latest Xcode
           XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
@@ -134,24 +139,30 @@ jobs:
           echo "Using Xcode: $XCODE_APP"
           sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
 
-          # Add Xcode toolchain bin to PATH so configure finds metal directly
-          TOOLCHAIN_BIN="$XCODE_APP/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin"
-          echo "Adding toolchain bin: $TOOLCHAIN_BIN"
-          echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
+          # Save Xcode toolchain path for configure step
+          TOOLCHAIN_BIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+          echo "toolchain-bin=$TOOLCHAIN_BIN" >> $GITHUB_OUTPUT
+
+          # Verify metal is in toolchain
+          ls "$TOOLCHAIN_BIN/metal" 2>/dev/null && echo "metal found in toolchain" || echo "metal NOT in toolchain"
 
           # Make GNU make available as 'make'
           echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
       - name: 'Configure'
-        run: >
-          bash configure
-          --with-conf-name=${{ matrix.platform }}
-          --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
-          --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
-          --with-gtest=${{ steps.gtest.outputs.path }}
-          --with-zlib=system
-          --with-jmod-compress=zip-1
-          || (echo "Dumping config.log:" && cat config.log && exit 1)
+        run: |
+          # Add Xcode toolchain to PATH so configure finds metal
+          export PATH="${{ steps.toolchain.outputs.toolchain-bin }}:$PATH"
+          echo "Verifying metal: $(which metal 2>/dev/null || echo 'NOT FOUND')"
+
+          bash configure \
+            --with-conf-name=${{ matrix.platform }} \
+            --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA} \
+            --with-boot-jdk=${{ steps.bootjdk.outputs.path }} \
+            --with-gtest=${{ steps.gtest.outputs.path }} \
+            --with-zlib=system \
+            --with-jmod-compress=zip-1 \
+            || (echo "Dumping config.log:" && cat config.log && exit 1)
 
       - name: 'Build'
         id: build
