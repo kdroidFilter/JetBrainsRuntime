@@ -105,8 +105,12 @@ jobs:
         include:
           - platform: macos-aarch64
             runs-on: macos-26
+            boot-jdk-platform: macos-aarch64
+            extra-conf: ''
           - platform: macos-x64
             runs-on: macos-26
+            boot-jdk-platform: macos-aarch64
+            extra-conf: '--openjdk-target=x86_64-apple-darwin'
 
     steps:
       - name: 'Checkout RTL branch'
@@ -118,7 +122,7 @@ jobs:
         id: bootjdk
         uses: ./.github/actions/get-bootjdk
         with:
-          platform: ${{ matrix.platform }}
+          platform: ${{ matrix.boot-jdk-platform }}
 
       - name: 'Get GTest'
         id: gtest
@@ -148,6 +152,7 @@ jobs:
           --with-gtest=${{ steps.gtest.outputs.path }}
           --with-zlib=system
           --with-jmod-compress=zip-1
+          ${{ matrix.extra-conf }}
           || (echo "Dumping config.log:" && cat config.log && exit 1)
 
       - name: 'Build'
