@@ -106,7 +106,7 @@ jobs:
           - platform: macos-aarch64
             runs-on: macos-26
           - platform: macos-x64
-            runs-on: macos-26-xlarge
+            runs-on: macos-26
 
     steps:
       - name: 'Checkout RTL branch'
@@ -144,8 +144,6 @@ jobs:
           --with-gtest=${{ steps.gtest.outputs.path }}
           --with-zlib=system
           --with-jmod-compress=zip-1
-          --with-external-symbols-in-bundles=none
-          --with-native-debug-symbols-level=1
           || (echo "Dumping config.log:" && cat config.log && exit 1)
 
       - name: 'Build'
