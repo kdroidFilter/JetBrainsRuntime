@@ -141,26 +141,55 @@ jobs:
           XCODE_DEV="$(xcode-select -p)"
           TOOLCHAIN_BIN="$XCODE_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 
-          # Find metallib — it may live in a separate metal toolchain directory
-          METAL_EXTRA_PATHS=""
-          METALLIB_PATH=$(find "$XCODE_DEV" -name metallib -type f 2>/dev/null | head -1)
+          # Diagnostics: find all metal-related tools
+          echo "=== Searching for metal tools ==="
+          find "$XCODE_APP" -name "metal" -o -name "metallib" -o -name "metal-*" 2>/dev/null | sort
+          echo "=== xcrun checks ==="
+          xcrun -find metal 2>&1 || true
+          xcrun -find metallib 2>&1 || true
+          xcrun --sdk macosx -find metallib 2>&1 || true
+          echo "=== /usr/bin metal tools ==="
+          ls -la /usr/bin/metal* 2>/dev/null || echo "No metal tools in /usr/bin"
+          echo "=== Metal toolchains ==="
+          ls -d "$XCODE_DEV"/Toolchains/*etal* 2>/dev/null || echo "No Metal toolchains found"
+          echo "=== Developer usr/bin ==="
+          ls "$XCODE_DEV/usr/bin/metal"* 2>/dev/null || echo "No metal tools in Developer/usr/bin"
+          echo "=========================="
+
+          # Collect all directories containing metal tools
+          EXTRA_PATHS="$TOOLCHAIN_BIN"
+
+          # Check Developer/usr/bin (often has tools not in toolchain)
+          if [ -f "$XCODE_DEV/usr/bin/metallib" ]; then
+            EXTRA_PATHS="$EXTRA_PATHS:$XCODE_DEV/usr/bin"
+            echo "Found metallib in Developer/usr/bin"
+          fi
+
+          # Find metallib anywhere in Xcode
+          METALLIB_PATH=$(find "$XCODE_APP" -name metallib -type f 2>/dev/null | head -1)
           if [ -n "$METALLIB_PATH" ]; then
             METALLIB_DIR=$(dirname "$METALLIB_PATH")
             echo "Found metallib at: $METALLIB_PATH"
-            if [ "$METALLIB_DIR" != "$TOOLCHAIN_BIN" ]; then
-              METAL_EXTRA_PATHS="$METALLIB_DIR"
-            fi
+            # Add to path if not already included
+            case ":$EXTRA_PATHS:" in
+              *":$METALLIB_DIR:"*) ;;
+              *) EXTRA_PATHS="$EXTRA_PATHS:$METALLIB_DIR" ;;
+            esac
           else
-            echo "WARNING: metallib not found in Xcode"
+            echo "WARNING: metallib not found anywhere in Xcode app bundle"
+            # Try to find it system-wide
+            METALLIB_SYS=$(which metallib 2>/dev/null || find /usr -name metallib -type f 2>/dev/null | head -1)
+            if [ -n "$METALLIB_SYS" ]; then
+              echo "Found metallib system-wide at: $METALLIB_SYS"
+              EXTRA_PATHS="$EXTRA_PATHS:$(dirname "$METALLIB_SYS")"
+            fi
           fi
 
-          # Build the extra PATH string for configure
-          EXTRA_PATH="$TOOLCHAIN_BIN"
-          [ -n "$METAL_EXTRA_PATHS" ] && EXTRA_PATH="$EXTRA_PATH:$METAL_EXTRA_PATHS"
-          echo "extra-path=$EXTRA_PATH" >> $GITHUB_OUTPUT
+          echo "extra-path=$EXTRA_PATHS" >> $GITHUB_OUTPUT
 
           # Verify tools
           ls "$TOOLCHAIN_BIN/metal" 2>/dev/null && echo "metal found in toolchain" || echo "metal NOT in toolchain"
+          echo "Final extra-path: $EXTRA_PATHS"
 
           # Make GNU make available as 'make'
           echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
