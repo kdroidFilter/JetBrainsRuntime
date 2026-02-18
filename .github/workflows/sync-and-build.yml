@@ -127,12 +127,34 @@ jobs:
       - name: 'Install toolchain and dependencies'
         run: |
           brew install autoconf make
-          # Select latest Xcode 26
-          XCODE_APP=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+
+          # Debug: list available Xcode installations
+          echo "=== Available Xcode versions ==="
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "None"
+
+          # Select Xcode (latest available)
+          XCODE_APP=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
           [ -z "$XCODE_APP" ] && XCODE_APP="/Applications/Xcode.app"
-          echo "Using Xcode: $XCODE_APP"
+          echo "Selected Xcode: $XCODE_APP"
           sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
-          # This will make GNU make available as 'make' and not only as 'gmake'
+
+          # Verify metal is accessible (required by JBR configure)
+          if xcrun --find metal >/dev/null 2>&1; then
+            echo "metal found: $(xcrun --find metal)"
+          else
+            echo "WARNING: metal not found via xcrun, searching in Xcode bundle..."
+            METAL_PATH=$(find "$XCODE_APP" -name "metal" -type f 2>/dev/null | head -1)
+            if [ -n "$METAL_PATH" ]; then
+              echo "Found metal at: $METAL_PATH"
+              echo "$(dirname "$METAL_PATH")" >> $GITHUB_PATH
+            else
+              echo "ERROR: metal not found anywhere in $XCODE_APP"
+              echo "This Xcode version may not include Metal developer tools."
+              exit 1
+            fi
+          fi
+
+          # Make GNU make available as 'make'
           echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
       - name: 'Configure'
